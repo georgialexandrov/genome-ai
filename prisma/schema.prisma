@@ -63,3 +63,24 @@ model DrugInteraction {
   interaction String
   snp         Snp    @relation(fields: [rsid], references: [rsid])
 }
+
+model TaskQueue {
+  id           Int       @id @default(autoincrement())
+  taskType     String // Type of task (e.g., "snpedia-update", "genome-analysis", etc.)
+  taskId       String // Unique identifier for the specific task (e.g., rsid for SNP tasks)
+  arguments    Json? // Task-specific arguments as JSON
+  status       String    @default("pending") // pending, processing, done, error
+  priority     Int       @default(0) // Higher number = higher priority
+  retryCount   Int       @default(0) // Number of times this task has been retried
+  maxRetries   Int       @default(3) // Maximum number of retries allowed
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  processedAt  DateTime?
+  completedAt  DateTime?
+  errorMessage String?
+  result       Json? // Task result stored as JSON
+
+  @@unique([taskType, taskId]) // Ensure unique tasks
+  @@index([status, priority, createdAt])
+  @@index([taskType, status])
+}

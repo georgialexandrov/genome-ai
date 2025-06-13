@@ -87,9 +87,12 @@ export class SnpediaService {
     data: ComprehensiveSnpData,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      // Use consistent rsid - always use snpId (normalized) to avoid conflicts
+      const normalizedRsid = snpId.toLowerCase();
+
       // Prepare core SNP data
       const snpData = {
-        rsid: data.rsid || snpId,
+        rsid: normalizedRsid, // Always use the input snpId for consistency
         gene: data.gene,
         chromosome: data.chromosome,
         position: data.position,
@@ -119,25 +122,26 @@ export class SnpediaService {
           delete snpData[key as keyof typeof snpData],
       );
 
-      // Upsert SNP record
+      // Upsert SNP record - use same normalized rsid for where clause and data
+      console.log('Try to update', normalizedRsid, { snpData });
       const snp = await tx.snp.upsert({
-        where: { rsid: snpId },
+        where: { rsid: normalizedRsid },
         update: snpData,
         create: snpData,
       });
 
-      this.logger.log(`Upserted SNP record for ${snpId}`);
+      this.logger.log(`Upserted SNP record for ${normalizedRsid}`);
 
-      // Clear existing related data
-      await tx.phenotype.deleteMany({ where: { rsid: snpId } });
-      this.logger.log(`Cleared existing phenotypes for ${snpId}`);
+      // Clear existing related data using normalized rsid
+      await tx.phenotype.deleteMany({ where: { rsid: normalizedRsid } });
+      this.logger.log(`Cleared existing phenotypes for ${normalizedRsid}`);
       console.log(JSON.stringify(data, null, 2));
       // Store genotype-specific phenotypes
       if (data.genotypes && data.genotypes.length > 0) {
         for (const genotype of data.genotypes) {
           await tx.phenotype.create({
             data: {
-              rsid: snpId,
+              rsid: normalizedRsid,
               phenotype: genotype.summary,
               riskAllele: genotype.genotype,
               effectSize: genotype.magnitude,
@@ -145,7 +149,7 @@ export class SnpediaService {
           });
         }
         this.logger.log(
-          `Created ${data.genotypes.length} phenotypes for ${snpId}`,
+          `Created ${data.genotypes.length} phenotypes for ${normalizedRsid}`,
         );
       }
 
@@ -166,37 +170,39 @@ export class SnpediaService {
           await tx.snpTag.upsert({
             where: {
               snpId_tagId: {
-                snpId: snpId,
+                snpId: normalizedRsid,
                 tagId: (await tx.tag.findUnique({ where: { name: trait } }))!
                   .id,
               },
             },
             update: {},
             create: {
-              snpId: snpId,
+              snpId: normalizedRsid,
               tagId: (await tx.tag.findUnique({ where: { name: trait } }))!.id,
             },
           });
         }
-        this.logger.log(`Linked ${data.traits.length} traits for ${snpId}`);
+        this.logger.log(
+          `Linked ${data.traits.length} traits for ${normalizedRsid}`,
+        );
       }
 
       // Store PMIDs and external links as metadata
       if (data.pmids && data.pmids.length > 0) {
         this.logger.log(
-          `Found ${data.pmids.length} PMIDs for ${snpId}: ${data.pmids.join(', ')}`,
+          `Found ${data.pmids.length} PMIDs for ${normalizedRsid}: ${data.pmids.join(', ')}`,
         );
       }
 
       if (data.externalLinks && data.externalLinks.length > 0) {
         this.logger.log(
-          `Found ${data.externalLinks.length} external links for ${snpId}`,
+          `Found ${data.externalLinks.length} external links for ${normalizedRsid}`,
         );
       }
 
       // Log data quality metrics
       this.logger.log(
-        `Data quality for ${snpId}: ${JSON.stringify(data.sourceData)}`,
+        `Data quality for ${normalizedRsid}: ${JSON.stringify(data.sourceData)}`,
       );
     });
   }
@@ -229,7 +235,13 @@ export class SnpediaService {
     if (!snpData) {
       throw new Error(`SNP ${snpId} not found after fetching`);
     }
-
+    console.log({ phenotypes: snpData.phenotypes });
+    if (
+      snpData.phenotypes.length === 1 &&
+      snpData.phenotypes.at(0)?.phenotype === 'common in complete genomics'
+    ) {
+      return { snpData, aiInterpretation: null };
+    }
     // Generate AI interpretation using the comprehensive data
     const aiInterpretation = await this.aiService.interpretSnpData({
       rsid: snpData.rsid,

@@ -5,9 +5,10 @@ import { RawDataProcessingModule } from './raw-data-processing/raw-data-processi
 import { RawDataProcessingController } from './raw-data-processing/raw-data-processing.controller';
 import { CrawlersModule } from './crawlers/crawlers.module';
 import { AiModule } from './ai/ai.module';
+import { QueueModule } from './queue/queue.module';
 
 @Module({
-  imports: [RawDataProcessingModule, CrawlersModule, AiModule],
+  imports: [RawDataProcessingModule, CrawlersModule, AiModule, QueueModule],
   controllers: [AppController, RawDataProcessingController],
   providers: [AppService],
 })
