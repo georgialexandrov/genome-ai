@@ -1,0 +1,60 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Core models for enriched SNP data
+model Snp {
+  rsid        String  @id
+  chromosome  String?
+  position    Int?
+  gene        String?
+  summary     String?
+  magnitude   Int?
+  phenotypes  Phenotype[]
+  tags        SnpTag[]
+  drugInteractions DrugInteraction[]
+}
+
+model Phenotype {
+  id          Int     @id @default(autoincrement())
+  rsid        String
+  phenotype   String
+  riskAllele  String?
+  effectSize  Float?
+  snp         Snp     @relation(fields: [rsid], references: [rsid])
+}
+
+model Tag {
+  id       Int      @id @default(autoincrement())
+  name     String   @unique
+  category String?
+  snps     SnpTag[]
+}
+
+model SnpTag {
+  snpId String
+  tagId Int
+  snp   Snp    @relation(fields: [snpId], references: [rsid])
+  tag   Tag    @relation(fields: [tagId], references: [id])
+
+  @@id([snpId, tagId])
+}
+
+model DrugInteraction {
+  id          Int    @id @default(autoincrement())
+  rsid        String
+  drugName    String
+  interaction String
+  snp         Snp    @relation(fields: [rsid], references: [rsid])
+}
