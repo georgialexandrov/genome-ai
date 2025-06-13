@@ -15,24 +15,25 @@ datasource db {
 
 // Core models for enriched SNP data
 model Snp {
-  rsid        String  @id
-  chromosome  String?
-  position    Int?
-  gene        String?
-  summary     String?
-  magnitude   Int?
-  phenotypes  Phenotype[]
-  tags        SnpTag[]
+  rsid             String            @id
+  chromosome       String?
+  position         Int?
+  gene             String?
+  summary          String?
+  magnitude        Int?
+  genotype         String? // Added genotype field
+  phenotypes       Phenotype[]
+  tags             SnpTag[]
   drugInteractions DrugInteraction[]
 }
 
 model Phenotype {
-  id          Int     @id @default(autoincrement())
-  rsid        String
-  phenotype   String
-  riskAllele  String?
-  effectSize  Float?
-  snp         Snp     @relation(fields: [rsid], references: [rsid])
+  id         Int     @id @default(autoincrement())
+  rsid       String
+  phenotype  String
+  riskAllele String?
+  effectSize Float?
+  snp        Snp     @relation(fields: [rsid], references: [rsid])
 }
 
 model Tag {
