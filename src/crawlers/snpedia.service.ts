@@ -1,83 +1,27 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
-const wtf = require('wtf_wikipedia');
+import { AiService } from '../ai/ai.service';
+import {
+  SnpediaParserService,
+  SnpediaInput,
+  ComprehensiveSnpData,
+} from '../parsers/snpedia-parser.service';
 
-interface SnpTemplateData {
-  template?: string; // Name of the template, e.g., 'Rsnum'
-  rsid?: string;
-  Gene?: string;
-  Chromosome?: string;
-  position?: string;
-  Orientation?: string;
-  StabilizedOrientation?: string;
-  ReferenceAllele?: string;
-  GMAF?: string;
-  Gene_s?: string;
-  Assembly?: string;
-  GenomeBuild?: string;
-  dbSNPBuild?: string;
-  Summary?: string; // Overall summary for the SNP page
-  magnitude?: string; // Overall magnitude for the SNP
-
-  // Genotype specific fields, e.g., geno1, mag1, sum1
-  geno1?: string;
-  mag1?: string;
-  sum1?: string;
-  geno2?: string;
-  mag2?: string;
-  sum2?: string;
-  geno3?: string;
-  mag3?: string;
-  sum3?: string;
-  geno4?: string;
-  mag4?: string;
-  sum4?: string;
-  geno5?: string;
-  mag5?: string;
-  sum5?: string;
-  // Add more if more genotypes are common, or handle dynamically if possible
-  [key: string]: any; // Allow other properties, like description if Summary is not present
-}
-
-// Define an interface for the expected SNPedia API response
-interface SnpediaPage {
-  pageid: number;
-  ns: number;
+// Define an interface for the new SNPedia API response format
+interface SnpediaParsePage {
   title: string;
-  revisions?: [
-    {
-      contentformat: string;
-      contentmodel: string;
-      '*': string;
-    },
-  ];
-  missing?: string;
-}
-
-interface SnpediaQuery {
-  pages: {
-    [pageId: string]: SnpediaPage;
+  pageid: number;
+  text: {
+    '*': string;
+  };
+  wikitext: {
+    '*': string;
   };
 }
 
 interface SnpediaResponse {
-  batchcomplete: string;
-  query: SnpediaQuery;
-}
-
-interface ParsedPhenotype {
-  genotype: string;
-  magnitude?: number | null;
-  summary?: string;
-}
-
-interface ParsedSnpData {
-  summary?: string; // Overall summary for the SNP
-  magnitude?: number | null; // Overall magnitude for the SNP
-  gene?: string;
-  phenotypes: ParsedPhenotype[]; // Changed to non-optional, will be empty array if none found
-  sourceTemplate: 'Rsnum' | 'fallback' | 'none'; // To indicate how data was derived
+  parse: SnpediaParsePage;
 }
 
 @Injectable()
@@ -86,259 +30,575 @@ export class SnpediaService {
   private prisma = new PrismaClient();
   private readonly baseUrl = 'https://bots.snpedia.com/api.php';
 
-  private parseSnpediaContent(wikitext: string): ParsedSnpData {
-    const doc = wtf(wikitext);
-    const parsedResult: ParsedSnpData = {
-      phenotypes: [],
-      sourceTemplate: 'none',
-    };
+  constructor(
+    private readonly aiService: AiService,
+    private readonly snpediaParser: SnpediaParserService,
+  ) {}
 
-    const rsnumTemplate = doc
-      .templates()
-
-      .find((t) => t.wikitext().toLowerCase().startsWith('{{rsnum'));
-
-    if (rsnumTemplate) {
-      parsedResult.sourceTemplate = 'Rsnum';
-      // @ts-ignore
-      const templateData = rsnumTemplate.json() as SnpTemplateData;
-
-      parsedResult.gene = templateData.Gene;
-      parsedResult.summary = templateData.Summary || templateData.description;
-
-      if (templateData.magnitude) {
-        const mag = parseFloat(templateData.magnitude);
-        if (!isNaN(mag)) {
-          parsedResult.magnitude = mag;
-        }
-      }
-
-      for (let i = 1; i <= 5; i++) {
-        // Check for up to 5 genotypes
-        const genotype = templateData[`geno${i}` as keyof SnpTemplateData] as
-          | string
-          | undefined;
-        const magnitudeStr = templateData[
-          `mag${i}` as keyof SnpTemplateData
-        ] as string | undefined;
-        const summary = templateData[`sum${i}` as keyof SnpTemplateData] as
-          | string
-          | undefined;
-
-        if (genotype) {
-          const phenotype: ParsedPhenotype = { genotype };
-          if (magnitudeStr) {
-            const mag = parseFloat(magnitudeStr);
-            if (!isNaN(mag)) {
-              phenotype.magnitude = mag;
-            }
-          }
-          if (summary) {
-            phenotype.summary = summary;
-          }
-          parsedResult.phenotypes.push(phenotype);
-        } else {
-          // If genoX is not found, assume no more genotypes in this simple indexed format
-          // More complex templates might list genotypes differently
-        }
-      }
-      // If no genoX/magX/sumX fields, check for table based genotype info if Rsnum was found
-      if (parsedResult.phenotypes.length === 0) {
-        const tables = doc.tables();
-        if (tables && tables.length > 0) {
-          // @ts-ignore
-          tables.forEach((table: any) => {
-            const tableData = table.json() as Array<Record<string, any>>;
-            if (tableData && tableData.length > 0) {
-              // Check if table has Geno, Mag, Summary headers (case-insensitive)
-              const header = tableData[0];
-              const genoHeader = Object.keys(header).find(
-                (k) => k.toLowerCase() === 'geno',
-              );
-              const magHeader = Object.keys(header).find(
-                (k) => k.toLowerCase() === 'mag',
-              );
-              const summaryHeader = Object.keys(header).find(
-                (k) => k.toLowerCase() === 'summary',
-              );
-
-              if (genoHeader && magHeader && summaryHeader) {
-                tableData.forEach((row: Record<string, any>) => {
-                  const genotype = row[genoHeader]?.text || row[genoHeader];
-                  const magnitudeStr = row[magHeader]?.text || row[magHeader];
-                  const summary =
-                    row[summaryHeader]?.text || row[summaryHeader];
-
-                  if (genotype) {
-                    const phenotype: ParsedPhenotype = {
-                      genotype: String(genotype),
-                    };
-                    if (magnitudeStr) {
-                      const mag = parseFloat(String(magnitudeStr));
-                      if (!isNaN(mag)) {
-                        phenotype.magnitude = mag;
-                      }
-                    }
-                    if (summary) {
-                      phenotype.summary = String(summary);
-                    }
-                    parsedResult.phenotypes.push(phenotype);
-                  }
-                });
-              }
-            }
-          });
-        }
-      }
-    } else {
-      this.logger.warn(
-        'Rsnum template not found. Attempting fallback parsing for basic info.',
-      );
-      parsedResult.sourceTemplate = 'fallback';
-      const text = doc.text();
-      const summaryMatch = text.match(/summary=([^\\n|]*)/i);
-      if (summaryMatch && summaryMatch[1]) {
-        parsedResult.summary = summaryMatch[1].trim();
-      }
-      const magnitudeMatch = text.match(/magnitude=([^\\n|]*)/i);
-      if (magnitudeMatch && magnitudeMatch[1]) {
-        const mag = parseFloat(magnitudeMatch[1].trim());
-        if (!isNaN(mag)) parsedResult.magnitude = mag;
-      }
-      const geneMatch = text.match(/gene=([^\\n|]*)/i);
-      if (geneMatch && geneMatch[1]) {
-        parsedResult.gene = geneMatch[1].trim();
-      }
-    }
-
-    // Clean undefined keys from the main structure, phenotypes are handled internally
-    Object.keys(parsedResult).forEach(
-      (key) =>
-        parsedResult[key as keyof ParsedSnpData] === undefined &&
-        delete parsedResult[key as keyof ParsedSnpData],
-    );
-    if (!parsedResult.phenotypes) parsedResult.phenotypes = []; // Ensure phenotypes is always an array
-
-    return parsedResult;
-  }
-
+  /**
+   * Fetch SNP data from SNPedia and store in database using comprehensive parser
+   */
   async fetchAndStoreSnpData(snpId: string): Promise<void> {
     this.logger.log(`Fetching data for SNP ID: ${snpId}`);
+
     try {
       const response = await axios.get<SnpediaResponse>(this.baseUrl, {
         params: {
-          action: 'query',
-          titles: snpId,
-          prop: 'revisions',
-          rvprop: 'content',
+          action: 'parse',
+          page: snpId,
+          prop: 'text|wikitext',
           format: 'json',
         },
       });
 
-      const pages = response.data.query.pages;
-      const pageId = Object.keys(pages)[0];
-      const pageData = pages[pageId];
+      // Extract HTML and wikitext from the new response format
+      const htmlContent = response.data.parse.text['*'];
+      const wikitextContent = response.data.parse.wikitext['*'];
 
-      if (
-        pageData.missing !== undefined ||
-        !pageData.revisions ||
-        pageData.revisions.length < 1 // Corrected array length check
-      ) {
-        this.logger.warn(
-          `SNP ID ${snpId} not found or has no revisions on SNPedia.`,
-        );
-        return;
-      }
+      // Parse using the comprehensive parser
+      const parserInput: SnpediaInput = {
+        text: htmlContent,
+        wikitext: wikitextContent,
+      };
 
-      const content = pageData.revisions[0]['*'];
+      const parsedData: ComprehensiveSnpData =
+        this.snpediaParser.parseSnpediaContent(parserInput);
+
+      // Store in database
+      await this.storeComprehensiveSnpData(snpId, parsedData);
+
       this.logger.log(
-        `Data fetched for ${snpId}, attempting to parse and store.`,
+        `Successfully processed and stored SNP data for ${snpId}`,
       );
-
-      const parsedData = this.parseSnpediaContent(content);
-      console.log({ parsedData: JSON.stringify(parsedData, null, 2) });
-      this.logger.log(
-        `Parsed data for ${snpId}: ${JSON.stringify(parsedData)}`,
-      );
-
-      const snpUpdateData: {
-        summary?: string;
-        magnitude?: number | null;
-        gene?: string;
-      } = {};
-
-      if (parsedData.summary) snpUpdateData.summary = parsedData.summary;
-      if (parsedData.magnitude !== undefined) {
-        snpUpdateData.magnitude = parsedData.magnitude;
-      }
-      if (parsedData.gene) snpUpdateData.gene = parsedData.gene;
-
-      await this.prisma.$transaction(async (tx) => {
-        let snp = await tx.snp.findUnique({ where: { rsid: snpId } });
-
-        if (snp) {
-          if (Object.keys(snpUpdateData).length > 0) {
-            snp = await tx.snp.update({
-              where: { rsid: snpId },
-              data: snpUpdateData,
-            });
-            this.logger.log(
-              `Successfully updated SNP data for ${snpId} in the database.`,
-            );
-          } else {
-            this.logger.log(`No new core SNP data to update for ${snpId}.`);
-          }
-        } else {
-          snp = await tx.snp.create({
-            data: {
-              rsid: snpId,
-              ...snpUpdateData,
-            },
-          });
-          this.logger.log(
-            `Successfully created SNP data for ${snpId} from SNPedia.`,
-          );
-        }
-
-        // Handle phenotypes only if Rsnum template was the source
-        if (parsedData.sourceTemplate === 'Rsnum') {
-          this.logger.log(
-            `Processing phenotypes for ${snpId} from Rsnum template data.`,
-          );
-          // Delete existing phenotypes for this SNP
-          await tx.phenotype.deleteMany({ where: { rsid: snpId } });
-          this.logger.log(`Deleted existing phenotypes for ${snpId}.`);
-
-          if (parsedData.phenotypes && parsedData.phenotypes.length > 0) {
-            for (const p of parsedData.phenotypes) {
-              await tx.phenotype.create({
-                data: {
-                  rsid: snpId,
-                  phenotype: p.summary || '', // Genotype-specific summary
-                  riskAllele: p.genotype, // Genotype, e.g., (C;C)
-                  effectSize: p.magnitude, // Genotype-specific magnitude
-                },
-              });
-            }
-            this.logger.log(
-              `Created ${parsedData.phenotypes.length} new phenotypes for ${snpId}.`,
-            );
-          } else {
-            this.logger.log(
-              `No new phenotypes parsed from Rsnum template for ${snpId}.`,
-            );
-          }
-        } else {
-          this.logger.log(
-            `Phenotypes for ${snpId} not processed as source was not Rsnum or no phenotypes found.`,
-          );
-        }
-      });
     } catch (error) {
       this.logger.error(
         `Error processing SNP ${snpId}: ${(error as Error).message}`,
         (error as Error).stack,
       );
+      throw error;
     }
+  }
+
+  /**
+   * Store comprehensive SNP data in database
+   */
+  private async storeComprehensiveSnpData(
+    snpId: string,
+    data: ComprehensiveSnpData,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      // Prepare core SNP data
+      const snpData = {
+        rsid: data.rsid || snpId,
+        gene: data.gene,
+        chromosome: data.chromosome,
+        position: data.position,
+        summary: data.summary,
+        magnitude:
+          data.maxMagnitude ||
+          (data.genotypes.length > 0
+            ? Math.max(...data.genotypes.map((g) => g.magnitude))
+            : null),
+        snpediaParsedData: JSON.parse(JSON.stringify(data)), // Store the complete parsed data as JSON
+        snpediaLastFetched: new Date(), // Mark when this data was fetched
+        // orientation: data.orientation,
+        // referenceAllele: data.referenceAllele,
+        // assembly: data.assembly,
+        // dbSNPBuild: data.dbSNPBuild,
+        // gmaf: data.gmaf,
+        // riskAllele: data.riskAllele,
+        // genderSpecific: data.genderSpecific,
+      };
+
+      // Remove undefined values (but keep the JSON data)
+      Object.keys(snpData).forEach(
+        (key) =>
+          key !== 'snpediaParsedData' &&
+          key !== 'snpediaLastFetched' &&
+          snpData[key as keyof typeof snpData] === undefined &&
+          delete snpData[key as keyof typeof snpData],
+      );
+
+      // Upsert SNP record
+      const snp = await tx.snp.upsert({
+        where: { rsid: snpId },
+        update: snpData,
+        create: snpData,
+      });
+
+      this.logger.log(`Upserted SNP record for ${snpId}`);
+
+      // Clear existing related data
+      await tx.phenotype.deleteMany({ where: { rsid: snpId } });
+      this.logger.log(`Cleared existing phenotypes for ${snpId}`);
+      console.log(JSON.stringify(data, null, 2));
+      // Store genotype-specific phenotypes
+      if (data.genotypes && data.genotypes.length > 0) {
+        for (const genotype of data.genotypes) {
+          await tx.phenotype.create({
+            data: {
+              rsid: snpId,
+              phenotype: genotype.summary,
+              riskAllele: genotype.genotype,
+              effectSize: genotype.magnitude,
+            },
+          });
+        }
+        this.logger.log(
+          `Created ${data.genotypes.length} phenotypes for ${snpId}`,
+        );
+      }
+
+      // Store traits as tags if they exist
+      if (data.traits && data.traits.length > 0) {
+        for (const trait of data.traits) {
+          // Check if tag exists, create if not
+          await tx.tag.upsert({
+            where: { name: trait },
+            update: {},
+            create: {
+              name: trait,
+              category: 'trait',
+            },
+          });
+
+          // Link SNP to tag
+          await tx.snpTag.upsert({
+            where: {
+              snpId_tagId: {
+                snpId: snpId,
+                tagId: (await tx.tag.findUnique({ where: { name: trait } }))!
+                  .id,
+              },
+            },
+            update: {},
+            create: {
+              snpId: snpId,
+              tagId: (await tx.tag.findUnique({ where: { name: trait } }))!.id,
+            },
+          });
+        }
+        this.logger.log(`Linked ${data.traits.length} traits for ${snpId}`);
+      }
+
+      // Store PMIDs and external links as metadata
+      if (data.pmids && data.pmids.length > 0) {
+        this.logger.log(
+          `Found ${data.pmids.length} PMIDs for ${snpId}: ${data.pmids.join(', ')}`,
+        );
+      }
+
+      if (data.externalLinks && data.externalLinks.length > 0) {
+        this.logger.log(
+          `Found ${data.externalLinks.length} external links for ${snpId}`,
+        );
+      }
+
+      // Log data quality metrics
+      this.logger.log(
+        `Data quality for ${snpId}: ${JSON.stringify(data.sourceData)}`,
+      );
+    });
+  }
+
+  /**
+   * Fetch SNP data and generate AI interpretation
+   */
+  async fetchAndInterpretSnpData(snpId: string): Promise<{
+    snpData: any;
+    aiInterpretation: any;
+  }> {
+    this.logger.log(`Fetching and interpreting data for SNP ID: ${snpId}`);
+
+    // First fetch and store the SNP data
+    await this.fetchAndStoreSnpData(snpId);
+
+    // Then retrieve the stored data with phenotypes
+    const snpData = await this.prisma.snp.findUnique({
+      where: { rsid: snpId },
+      include: {
+        phenotypes: true,
+        tags: {
+          include: {
+            tag: true,
+          },
+        },
+      },
+    });
+
+    if (!snpData) {
+      throw new Error(`SNP ${snpId} not found after fetching`);
+    }
+
+    // Generate AI interpretation using the comprehensive data
+    const aiInterpretation = await this.aiService.interpretSnpData({
+      rsid: snpData.rsid,
+      gene: snpData.gene || undefined,
+      summary: snpData.summary || undefined,
+      magnitude: snpData.magnitude || undefined,
+      genotype: snpData.genotype || undefined,
+      phenotypes: snpData.phenotypes.map((p) => ({
+        genotype: p.riskAllele || '',
+        magnitude: p.effectSize || undefined,
+        summary: p.phenotype,
+      })),
+    });
+
+    // Store the AI interpretation in the database
+    await this.storeInterpretation(snpId, aiInterpretation);
+
+    this.logger.log(`Generated and stored AI interpretation for ${snpId}`);
+
+    return {
+      snpData,
+      aiInterpretation,
+    };
+  }
+
+  /**
+   * Store AI interpretation in the database
+   */
+  private async storeInterpretation(
+    snpId: string,
+    aiInterpretation: any,
+  ): Promise<void> {
+    try {
+      // Convert the AI interpretation object to a JSON string for storage
+      const interpretationText = JSON.stringify(aiInterpretation);
+
+      await this.prisma.snp.update({
+        where: { rsid: snpId },
+        data: {
+          interpretation: interpretationText,
+          interpretationGeneratedAt: new Date(),
+        },
+      });
+
+      this.logger.log(`Stored AI interpretation for ${snpId} in database`);
+    } catch (error) {
+      this.logger.error(`Error storing interpretation for ${snpId}:`, error);
+      throw new Error(`Failed to store interpretation: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update the user's genotype for a specific SNP
+   */
+  async updateSnpGenotype(snpId: string, genotype: string): Promise<void> {
+    this.logger.log(`Updating genotype for SNP ${snpId} to: ${genotype}`);
+
+    try {
+      await this.prisma.snp.upsert({
+        where: { rsid: snpId },
+        update: { genotype },
+        create: {
+          rsid: snpId,
+          genotype,
+        },
+      });
+
+      this.logger.log(`Successfully updated genotype for ${snpId}`);
+    } catch (error) {
+      this.logger.error(`Error updating genotype for ${snpId}:`, error);
+      throw new Error(`Failed to update genotype: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get SNP data with AI interpretation for a specific user genotype
+   */
+  async getSnpWithPersonalizedInterpretation(
+    snpId: string,
+    userGenotype?: string,
+  ): Promise<{
+    snpData: any;
+    aiInterpretation: any;
+  }> {
+    this.logger.log(`Getting personalized interpretation for SNP ${snpId}`);
+
+    // If userGenotype is provided, update it in the database first
+    if (userGenotype) {
+      await this.updateSnpGenotype(snpId, userGenotype);
+    }
+
+    // Fetch the SNP data (will include the updated genotype if provided)
+    const snpData = await this.prisma.snp.findUnique({
+      where: { rsid: snpId },
+      include: {
+        phenotypes: true,
+        tags: {
+          include: {
+            tag: true,
+          },
+        },
+      },
+    });
+
+    if (!snpData) {
+      throw new Error(
+        `SNP ${snpId} not found in database. Please fetch from SNPedia first.`,
+      );
+    }
+
+    // Check if we have a stored interpretation
+    let aiInterpretation: any = null;
+    if (snpData.interpretation) {
+      try {
+        aiInterpretation = JSON.parse(snpData.interpretation);
+        this.logger.log(`Using stored AI interpretation for ${snpId}`);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to parse stored interpretation for ${snpId}, will regenerate`,
+        );
+      }
+    }
+
+    // Generate new interpretation if none exists or if genotype was updated
+    if (!aiInterpretation || userGenotype) {
+      this.logger.log(`Generating new AI interpretation for ${snpId}`);
+
+      aiInterpretation = await this.aiService.interpretSnpData({
+        rsid: snpData.rsid,
+        gene: snpData.gene || undefined,
+        summary: snpData.summary || undefined,
+        magnitude: snpData.magnitude || undefined,
+        genotype: snpData.genotype || undefined, // User's actual genotype
+        phenotypes: snpData.phenotypes.map((p) => ({
+          genotype: p.riskAllele || '',
+          magnitude: p.effectSize || undefined,
+          summary: p.phenotype,
+        })),
+      });
+
+      // Store the new interpretation
+      await this.storeInterpretation(snpId, aiInterpretation);
+    }
+
+    this.logger.log(`Generated personalized AI interpretation for ${snpId}`);
+
+    return {
+      snpData,
+      aiInterpretation,
+    };
+  }
+
+  /**
+   * Force regenerate and store AI interpretation for a SNP
+   */
+  async regenerateInterpretation(snpId: string): Promise<any> {
+    this.logger.log(`Force regenerating interpretation for SNP ${snpId}`);
+
+    const snpData = await this.prisma.snp.findUnique({
+      where: { rsid: snpId },
+      include: {
+        phenotypes: true,
+        tags: {
+          include: {
+            tag: true,
+          },
+        },
+      },
+    });
+
+    if (!snpData) {
+      throw new Error(`SNP ${snpId} not found in database`);
+    }
+
+    // Generate new AI interpretation
+    const aiInterpretation = await this.aiService.interpretSnpData({
+      rsid: snpData.rsid,
+      gene: snpData.gene || undefined,
+      summary: snpData.summary || undefined,
+      magnitude: snpData.magnitude || undefined,
+      genotype: snpData.genotype || undefined,
+      phenotypes: snpData.phenotypes.map((p) => ({
+        genotype: p.riskAllele || '',
+        magnitude: p.effectSize || undefined,
+        summary: p.phenotype,
+      })),
+    });
+
+    // Store the new interpretation
+    await this.storeInterpretation(snpId, aiInterpretation);
+
+    this.logger.log(`Successfully regenerated interpretation for ${snpId}`);
+
+    return aiInterpretation;
+  }
+
+  /**
+   * Get stored interpretation from database
+   */
+  async getStoredInterpretation(snpId: string): Promise<any | null> {
+    const snpData = await this.prisma.snp.findUnique({
+      where: { rsid: snpId },
+      select: {
+        interpretation: true,
+        interpretationGeneratedAt: true,
+      },
+    });
+
+    if (!snpData || !snpData.interpretation) {
+      return null;
+    }
+
+    try {
+      const interpretation = JSON.parse(snpData.interpretation);
+      return {
+        ...interpretation,
+        generatedAt: snpData.interpretationGeneratedAt,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Failed to parse stored interpretation for ${snpId}:`,
+        error,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Get comprehensive SNP data by RSID
+   */
+  async getSnpData(snpId: string): Promise<any> {
+    const snpData = await this.prisma.snp.findUnique({
+      where: { rsid: snpId },
+      include: {
+        phenotypes: true,
+        tags: {
+          include: {
+            tag: true,
+          },
+        },
+        drugInteractions: true,
+      },
+    });
+
+    if (!snpData) {
+      throw new Error(`SNP ${snpId} not found in database`);
+    }
+
+    // Parse stored interpretation if available
+    let parsedInterpretation = null;
+    if (snpData.interpretation) {
+      try {
+        parsedInterpretation = JSON.parse(snpData.interpretation);
+      } catch (error) {
+        this.logger.warn(`Failed to parse stored interpretation for ${snpId}`);
+      }
+    }
+
+    return {
+      ...snpData,
+      parsedInterpretation,
+      hasSnpediaParsedData: !!snpData.snpediaParsedData,
+      snpediaLastFetched: snpData.snpediaLastFetched,
+    };
+  }
+
+  /**
+   * Search SNPs by gene name
+   */
+  async getSnpsByGene(gene: string): Promise<any[]> {
+    return await this.prisma.snp.findMany({
+      where: {
+        gene: {
+          contains: gene,
+          mode: 'insensitive',
+        },
+      },
+      include: {
+        phenotypes: true,
+        tags: {
+          include: {
+            tag: true,
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * Get risk analysis based on stored genotype data
+   */
+  async getRiskAnalysis(snpId: string): Promise<{
+    riskLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN';
+    magnitude: number | null;
+    userGenotype: string | null;
+    interpretation: string;
+  }> {
+    const snpData = await this.getSnpData(snpId);
+
+    if (!snpData.genotype) {
+      return {
+        riskLevel: 'UNKNOWN',
+        magnitude: snpData.magnitude,
+        userGenotype: null,
+        interpretation: 'No genotype data available for risk assessment',
+      };
+    }
+
+    // Find matching phenotype for user's genotype
+    const matchingPhenotype = snpData.phenotypes.find(
+      (p: any) => p.riskAllele === snpData.genotype,
+    );
+
+    const magnitude = matchingPhenotype?.effectSize || snpData.magnitude || 0;
+
+    let riskLevel: 'HIGH' | 'MEDIUM' | 'LOW' = 'LOW';
+    if (magnitude >= 3) riskLevel = 'HIGH';
+    else if (magnitude >= 2) riskLevel = 'MEDIUM';
+
+    return {
+      riskLevel,
+      magnitude,
+      userGenotype: snpData.genotype,
+      interpretation:
+        matchingPhenotype?.phenotype ||
+        snpData.summary ||
+        'No interpretation available',
+    };
+  }
+
+  /**
+   * Get complete SNPedia parsed data for a SNP
+   */
+  async getSnpediaParsedData(
+    snpId: string,
+  ): Promise<ComprehensiveSnpData | null> {
+    const snpData = await this.prisma.snp.findUnique({
+      where: { rsid: snpId },
+      select: {
+        snpediaParsedData: true,
+        snpediaLastFetched: true,
+      },
+    });
+
+    if (!snpData || !snpData.snpediaParsedData) {
+      return null;
+    }
+
+    return snpData.snpediaParsedData as unknown as ComprehensiveSnpData;
+  }
+
+  /**
+   * Check if SNPedia data needs to be refreshed (older than 30 days)
+   */
+  async shouldRefreshSnpediaData(snpId: string): Promise<boolean> {
+    const snpData = await this.prisma.snp.findUnique({
+      where: { rsid: snpId },
+      select: {
+        snpediaLastFetched: true,
+      },
+    });
+
+    if (!snpData || !snpData.snpediaLastFetched) {
+      return true; // No data or no fetch date, should refresh
+    }
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    return snpData.snpediaLastFetched < thirtyDaysAgo;
   }
 }
