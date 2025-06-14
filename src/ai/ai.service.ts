@@ -112,6 +112,8 @@ export class AiService {
     recommendations: string[];
     personalizedAnalysis: string;
     applicableTraits: string[];
+    importance: 'critical' | 'high' | 'moderate' | 'low' | 'minimal';
+    attentionStatus: 'requires_immediate_attention' | 'requires_monitoring' | 'beneficial_variant' | 'normal_population' | 'insufficient_data' | 'common_benign' | 'pharmacogenomic' | 'carrier_status';
   }> {
     const schema = z.object({
       interpretation: z
@@ -133,6 +135,21 @@ export class AiService {
         .describe(
           "Traits and health effects that specifically apply to this user's genotype",
         ),
+      importance: z
+        .enum(['critical', 'high', 'moderate', 'low', 'minimal'])
+        .describe('How important this SNP is for the individual to know about and act upon'),
+      attentionStatus: z
+        .enum([
+          'requires_immediate_attention',
+          'requires_monitoring', 
+          'beneficial_variant',
+          'normal_population',
+          'insufficient_data',
+          'common_benign',
+          'pharmacogenomic',
+          'carrier_status'
+        ])
+        .describe('Status indicating the type of attention this SNP requires based on personal genotype'),
     });
 
     // Find the matching phenotype for the user's genotype
@@ -162,8 +179,25 @@ export class AiService {
     3. Specific actionable health recommendations
     4. PERSONALIZED ANALYSIS: Focus specifically on what this means for someone with the genotype "${snpData.genotype}". Explain how this person's specific genetic variant affects their health, traits, or disease risk.
     5. APPLICABLE TRAITS: List the specific traits, conditions, or health effects that apply to this user's genotype.
+    6. IMPORTANCE LEVEL: Rate how important this SNP is for this individual to know about and act upon:
+       - critical: Life-threatening conditions, major disease risks requiring immediate medical attention
+       - high: Significant health impact, preventable conditions, major drug responses
+       - moderate: Notable health effects, lifestyle modifications beneficial
+       - low: Minor traits or small effect sizes
+       - minimal: Common variants with little practical impact
+    7. ATTENTION STATUS: Choose the most appropriate status based on the user's genotype:
+       - requires_immediate_attention: High-risk pathogenic variants needing urgent medical consultation
+       - requires_monitoring: Increased disease risk warranting regular screening
+       - beneficial_variant: Protective variants or positive traits
+       - normal_population: Common genotype similar to general population
+       - insufficient_data: Limited evidence or conflicting studies
+       - common_benign: Very common variant with no significant health impact
+       - pharmacogenomic: Important for drug metabolism or response
+       - carrier_status: Carrier for recessive conditions (important for family planning)
     
     Be specific about the user's genotype and avoid generic advice. Focus on evidence-based, personalized insights that are directly relevant to their genetic makeup.
+    
+    IMPORTANT: Base the importance and attention status specifically on THIS USER'S GENOTYPE (${snpData.genotype}), not on the general SNP. A SNP might be critical in general but if this user has the normal/common variant, it should be rated as normal_population or common_benign.
     `;
 
     return this.generateObject(prompt, schema);

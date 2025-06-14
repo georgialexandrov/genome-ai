@@ -20,7 +20,7 @@ model Snp {
   position                  Int?
   gene                      String?
   summary                   String?
-  magnitude                 Int?
+  magnitude                 Float?
   genotype                  String? // Added genotype field
   interpretation            String? // AI-generated interpretation
   interpretationGeneratedAt DateTime? // When the interpretation was last generated

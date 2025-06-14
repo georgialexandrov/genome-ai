@@ -90,6 +90,38 @@ export class SnpediaService {
       // Use consistent rsid - always use snpId (normalized) to avoid conflicts
       const normalizedRsid = snpId.toLowerCase();
 
+      // Get the existing SNP record to check if user has genotype data
+      const existingSnp = await tx.snp.findUnique({
+        where: { rsid: normalizedRsid },
+        select: { genotype: true },
+      });
+
+      // Calculate magnitude based on user's genotype if available, otherwise use max magnitude
+      let calculatedMagnitude: number | null = null;
+      if (existingSnp?.genotype && data.genotypes.length > 0) {
+        // Find the magnitude for the user's specific genotype
+        // Note: SNPedia uses semicolon format (C;C) while 23andMe uses concatenated format (CC)
+        const userGenotypeData = data.genotypes.find((g) => {
+          const snpediaGenotype = g.genotype.replace(/;/g, '').toUpperCase();
+          const userGenotype = existingSnp.genotype!.toUpperCase();
+          return snpediaGenotype === userGenotype;
+        });
+        calculatedMagnitude =
+          userGenotypeData?.magnitude !== undefined
+            ? userGenotypeData.magnitude
+            : null;
+
+        if (calculatedMagnitude !== null && userGenotypeData) {
+          this.logger.log(
+            `Using user-specific magnitude ${calculatedMagnitude} for genotype ${existingSnp.genotype} (matched SNPedia format: ${userGenotypeData.genotype}) in ${normalizedRsid}`,
+          );
+        } else {
+          this.logger.log(
+            `No magnitude found for user genotype ${existingSnp.genotype} in ${normalizedRsid}. Available genotypes: ${data.genotypes.map((g) => `${g.genotype}(${g.genotype.replace(/;/g, '').toUpperCase()})`).join(', ')}`,
+          );
+        }
+      }
+
       // Prepare core SNP data
       const snpData = {
         rsid: normalizedRsid, // Always use the input snpId for consistency
@@ -97,11 +129,7 @@ export class SnpediaService {
         chromosome: data.chromosome,
         position: data.position,
         summary: data.summary,
-        magnitude:
-          data.maxMagnitude ||
-          (data.genotypes.length > 0
-            ? Math.max(...data.genotypes.map((g) => g.magnitude))
-            : null),
+        magnitude: calculatedMagnitude,
         snpediaParsedData: JSON.parse(JSON.stringify(data)), // Store the complete parsed data as JSON
         snpediaLastFetched: new Date(), // Mark when this data was fetched
         // orientation: data.orientation,
@@ -123,7 +151,7 @@ export class SnpediaService {
       );
 
       // Upsert SNP record - use same normalized rsid for where clause and data
-      console.log('Try to update', normalizedRsid, { snpData });
+
       const snp = await tx.snp.upsert({
         where: { rsid: normalizedRsid },
         update: snpData,
@@ -135,7 +163,7 @@ export class SnpediaService {
       // Clear existing related data using normalized rsid
       await tx.phenotype.deleteMany({ where: { rsid: normalizedRsid } });
       this.logger.log(`Cleared existing phenotypes for ${normalizedRsid}`);
-      console.log(JSON.stringify(data, null, 2));
+
       // Store genotype-specific phenotypes
       if (data.genotypes && data.genotypes.length > 0) {
         for (const genotype of data.genotypes) {
@@ -190,7 +218,7 @@ export class SnpediaService {
       // Store PMIDs and external links as metadata
       if (data.pmids && data.pmids.length > 0) {
         this.logger.log(
-          `Found ${data.pmids.length} PMIDs for ${normalizedRsid}: ${data.pmids.join(', ')}`,
+          `Found ${data.pmids.length} PMIDs for ${normalizedRsid}: ${data.pmids.map((p) => `${p.pmid}${p.title ? ` (${p.title})` : ''}`).join(', ')}`,
         );
       }
 
@@ -235,10 +263,19 @@ export class SnpediaService {
     if (!snpData) {
       throw new Error(`SNP ${snpId} not found after fetching`);
     }
-    console.log({ phenotypes: snpData.phenotypes });
+    const common = [
+      'common in complete genomics',
+      'common genotype',
+      'common in clinvar',
+    ];
+
     if (
-      snpData.phenotypes.length === 1 &&
-      snpData.phenotypes.at(0)?.phenotype === 'common in complete genomics'
+      snpData.phenotypes.length == 0 ||
+      (snpData.phenotypes.length == 1 &&
+        common.includes(snpData.phenotypes.at(0)?.phenotype ?? '')) ||
+      !snpData.phenotypes.find(
+        (ph) => ph.riskAllele?.replace(';', '') === snpData.genotype,
+      )
     ) {
       return { snpData, aiInterpretation: null };
     }

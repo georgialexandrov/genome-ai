@@ -116,7 +116,7 @@ export class SnpediaDiscoveryService {
     let continueToken: string | undefined;
     let batchCount = 0;
     let totalQueuedCount = 0;
-    const maxBatches = 100; // Safety limit
+    const maxBatches = 1000; // Safety limit
 
     try {
       do {

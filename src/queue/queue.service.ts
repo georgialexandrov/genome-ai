@@ -269,7 +269,7 @@ export class QueueService {
   /**
    * Cron job to process queue every 5 seconds
    */
-  @Cron('*/5 * * * * *') // Every 5 seconds
+  @Cron('*/2 * * * * *') // Every 2 seconds
   async processQueue(): Promise<void> {
     if (this.isProcessing) {
       this.logger.debug('Queue processor already running, skipping');

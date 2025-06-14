@@ -33,7 +33,7 @@ export interface ComprehensiveSnpData {
 
   // External references
   externalLinks: ExternalLink[];
-  pmids: string[];
+  pmids: PmidInfo[];
 
   // Metadata
   orientation?: string;
@@ -54,6 +54,17 @@ export interface ComprehensiveSnpData {
     genotypeCount: number;
     externalLinkCount: number;
   };
+
+  // Raw content storage
+  rawContent?: {
+    html?: string;
+    wikitext?: string;
+  };
+}
+
+export interface PmidInfo {
+  pmid: string;
+  title?: string;
 }
 
 export interface GenotypeInfo {
@@ -97,9 +108,21 @@ export class SnpediaParserService {
     const htmlData = this.parseHtmlContent(input.text);
     const wikiData = this.parseWikiTemplates(input.wikitext);
     const contentData = this.parseContentText(input.wikitext);
-    console.log(JSON.stringify({ htmlData, wikiData }, null, 2));
+    console.log({
+      htmlData: JSON.stringify(htmlData, null, 2),
+      wikiData: JSON.stringify(wikiData, null, 2),
+    });
+    
     // Merge with MediaWiki data taking priority
-    return this.mergeSnpData(htmlData, wikiData, contentData);
+    const mergedData = this.mergeSnpData(htmlData, wikiData, contentData);
+    
+    // Add raw content
+    mergedData.rawContent = {
+      html: input.text,
+      wikitext: input.wikitext,
+    };
+    
+    return mergedData;
   }
 
   /**
@@ -125,6 +148,9 @@ export class SnpediaParserService {
 
     // Extract external links
     this.extractExternalLinksFromHtml(result, $);
+
+    // Extract PMIDs
+    this.extractPmidsFromHtml(result, $);
 
     // Extract population data
     this.extractPopulationDataFromHtml(result, $);
@@ -171,7 +197,7 @@ export class SnpediaParserService {
       traits: [] as string[],
       genotypeEffects: [] as GenotypeEffect[],
       relatedSNPs: [] as string[],
-      pmids: [] as string[],
+      pmids: [] as PmidInfo[],
       riskAllele: undefined as string | undefined,
       genderSpecific: undefined as string | undefined,
       clinicalSignificance: [] as string[],
@@ -227,15 +253,30 @@ export class SnpediaParserService {
       ];
     }
 
-    // Extract PMIDs
-    const pmidMatches = text.match(/\{\{PMID\|(\d+)/g);
+    // Extract PMIDs with titles
+    const pmidMatches = text.match(/\{\{PMID\|(\d+)([^}]*)\}\}/g);
     if (pmidMatches) {
       result.pmids = pmidMatches
         .map((match) => {
-          const pmidMatch = match.match(/\{\{PMID\|(\d+)/);
-          return pmidMatch ? pmidMatch[1] : '';
+          const pmidMatch = match.match(/\{\{PMID\|(\d+)([^}]*)\}\}/);
+          if (pmidMatch) {
+            const pmid = pmidMatch[1];
+            const titlePart = pmidMatch[2];
+
+            // Extract title if it exists (format might be |title=... or just |...)
+            let title: string | undefined;
+            if (titlePart) {
+              const titleMatch = titlePart.match(/\|(?:title=)?([^|]+)/);
+              if (titleMatch) {
+                title = titleMatch[1].trim();
+              }
+            }
+
+            return { pmid, title } as PmidInfo;
+          }
+          return null;
         })
-        .filter(Boolean);
+        .filter((item): item is PmidInfo => item !== null);
     }
 
     // Extract gender specificity
@@ -397,6 +438,51 @@ export class SnpediaParserService {
   }
 
   /**
+   * Extract PMIDs from HTML content
+   */
+  private extractPmidsFromHtml(
+    result: Partial<ComprehensiveSnpData>,
+    $: any,
+  ): void {
+    if (!result.pmids) result.pmids = [];
+
+    // Extract PMIDs from links to PubMed
+    $('a[href*="pubmed"]').each((_: any, link: any) => {
+      const href = $(link).attr('href');
+      const text = $(link).text().trim();
+
+      if (href) {
+        const pmidMatch = href.match(/(?:pubmed\/|pmid[=:]?)(\d+)/i);
+        if (pmidMatch) {
+          const pmid = pmidMatch[1];
+
+          // Try to extract title from the link text or surrounding context
+          let title: string | undefined;
+          if (text && text !== pmid && !text.match(/^\d+$/)) {
+            title = text;
+          } else {
+            // Try to get title from parent or sibling elements
+            const parent = $(link).parent();
+            const siblingText = parent.text().replace(text, '').trim();
+            if (siblingText && siblingText.length > 10) {
+              title = siblingText;
+            }
+          }
+
+          // Check if this PMID already exists
+          const existingPmid = result.pmids!.find((p) => p.pmid === pmid);
+          if (!existingPmid) {
+            result.pmids!.push({ pmid, title });
+          } else if (title && !existingPmid.title) {
+            // Update existing PMID with title if it didn't have one
+            existingPmid.title = title;
+          }
+        }
+      }
+    });
+  }
+
+  /**
    * Extract population diversity data from HTML
    */
   private extractPopulationDataFromHtml(
@@ -524,9 +610,17 @@ export class SnpediaParserService {
       // External references
       externalLinks: htmlData.externalLinks || [],
       pmids: [
+        ...(htmlData.pmids || []),
         ...(contentData.pmids || []),
-        ...(wikiData.pmidAuto?.map((p: any) => p.PMID) || []),
-      ].filter((v, i, a) => a.indexOf(v) === i), // Remove duplicates
+        ...(wikiData.pmidAuto?.map((p: any) => ({
+          pmid: p.PMID,
+          title: p.title,
+        })) || []),
+        ...(wikiData.pmid?.map((p: any) => ({
+          pmid: typeof p === 'string' ? p : p.PMID,
+          title: typeof p === 'object' ? p.title : undefined,
+        })) || []),
+      ].filter((v, i, a) => a.findIndex((item) => item.pmid === v.pmid) === i), // Remove duplicates by PMID
 
       // Metadata (MediaWiki priority)
       orientation: rsnumData.Orientation || htmlData.orientation,
