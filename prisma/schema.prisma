@@ -64,6 +64,26 @@ model DrugInteraction {
   snp         Snp    @relation(fields: [rsid], references: [rsid])
 }
 
+model GenotypeData {
+  id         Int            @id @default(autoincrement())
+  rsid       String
+  chromosome String
+  position   Int
+  genotype   String
+  source     GenotypeSource
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@unique([rsid, source]) // Ensure one entry per rsid per source
+  @@index([rsid])
+  @@index([source])
+}
+
+enum GenotypeSource {
+  TWENTYTHREEANDME
+  DANTELABS
+}
+
 model TaskQueue {
   id           Int       @id @default(autoincrement())
   taskType     String // Type of task (e.g., "snpedia-update", "genome-analysis", etc.)

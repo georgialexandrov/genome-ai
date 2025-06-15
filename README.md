@@ -99,31 +99,90 @@ src/
    npx prisma studio
    ```
 
-5. **Start the development server**
+5. **Start the development server** (optional - only needed for API endpoints)
    ```bash
    pnpm run start:dev
    # or
    npm run start:dev
    ```
 
-The API will be available at `http://localhost:3000`
+   The API will be available at `http://localhost:3000`
+
+## 🔄 Data Flow
+
+Genome AI follows a clear data processing pipeline:
+
+1. **Raw Data Import**: Genomic files are processed and stored in the `GenotypeData` table with source tracking
+2. **Data Synchronization**: Selected genotype data is synced to the main `Snp` table for enrichment
+3. **SNPedia Enrichment**: The discovery service finds SNPs needing enrichment and queues them
+4. **AI Interpretation**: Enhanced data is processed through AI services for personalized insights
+
+```mermaid
+graph LR
+    A[Raw Files] --> B[GenotypeData Table]
+    B --> C[Snp Table]
+    C --> D[SNPedia Enrichment]
+    D --> E[AI Interpretation]
+    E --> F[Personalized Reports]
+```
 
 ## 📊 Usage
 
-### Processing 23andMe Data
+### Processing Genomic Data
 
-1. **Upload your 23andMe raw data file** (typically named `genome_*.txt`)
-2. **Call the processing endpoint**:
-   ```bash
-   curl -X POST http://localhost:3000/raw-data-processing/process \
-     -F "file=@your-genome-file.txt"
-   ```
+Genome AI processes raw genomic data files using CLI commands rather than HTTP endpoints for better automation and file handling.
 
-3. **View enriched results** through the API endpoints or database
+#### Process 23andMe Data
+```bash
+# Process your 23andMe raw data file
+npm run queue:cli process-23andme ../genome_firstName_lastName_v5_Full_20250610040555.txt
+
+# Sync processed data to main SNP table for enrichment
+npm run queue:cli sync-23andme
+```
+
+#### Process DanteLabs Data
+```bash
+# Process your DanteLabs raw data file
+npm run queue:cli process-dantelabs ../genome_dantelabs.txt
+
+# Sync processed data to main SNP table for enrichment
+npm run queue:cli sync-dantelabs
+```
+
+> **Note**: If you have DanteLabs VCF files that need to be converted to 23andMe format, see the tutorial in `tutorials/dantelabs to 23andme.md` for step-by-step conversion instructions.
+
+#### Start SNPedia Enrichment
+```bash
+# Discover and queue SNPs for SNPedia enrichment
+npm run queue:cli discover
+
+# Check processing status
+npm run queue:cli stats
+npm run queue:cli discovery-stats
+```
+
+### CLI Commands
+
+```bash
+# Data Processing
+npm run queue:cli process-23andme <filepath>     # Process 23andMe raw data
+npm run queue:cli process-dantelabs <filepath>   # Process DanteLabs raw data
+npm run queue:cli sync-23andme                   # Sync 23andMe data to SNP table
+npm run queue:cli sync-dantelabs                 # Sync DanteLabs data to SNP table
+
+# SNPedia Operations
+npm run queue:cli discover                       # Discover and queue SNP updates
+npm run queue:cli test-api                       # Test SNPedia API connection
+
+# Queue Management
+npm run queue:cli stats                          # Show queue statistics
+npm run queue:cli discovery-stats                # Show discovery statistics
+npm run queue:cli cleanup [days]                # Clean up old tasks
+```
 
 ### API Endpoints
 
-- `POST /raw-data-processing/process` - Process 23andMe raw data
 - `GET /crawlers/snpedia/:rsid` - Get SNPedia data for a specific variant
 - `POST /ai/interpret` - Generate AI interpretation for genetic variants
 
@@ -171,10 +230,15 @@ genome-ai/
 │   ├── parsers/                # Data processing
 │   │   ├── snpedia-parser.service.ts
 │   │   └── parsers.module.ts
-│   └── raw-data-processing/    # 23andMe file processing
-│       ├── raw-data-processing.service.ts
-│       ├── raw-data-processing.controller.ts
-│       └── raw-data-processing.module.ts
+│   ├── raw-data-processing/    # Genomic file processing (CLI-based)
+│   │   ├── raw-data-processing.service.ts
+│   │   └── raw-data-processing.module.ts
+│   ├── queue/                  # Task queue system
+│   │   ├── queue.service.ts
+│   │   ├── queue.controller.ts
+│   │   └── queue.module.ts
+│   └── scripts/                # CLI tools
+│       └── queue-cli.ts        # Main CLI interface
 ├── prisma/
 │   └── schema.prisma          # Database schema
 ├── test/                      # Test files
